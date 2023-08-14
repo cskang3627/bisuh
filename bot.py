@@ -1,12 +1,39 @@
 import discord
 from discord.ext import commands
 import json
+import psycopg2
+
+
+
 
 # config stores prefix, token
 with open("config.json") as f:
-    data = json.load(f)
-TOK = data["token"]
-PRE = data["prefix"]
+    scrt = json.load(f)
+
+TOK = scrt["token"]
+PRE = scrt["prefix"]
+PGPW = scrt["pgpw"]
+
+conn = psycopg2.connect(host="localhost", dbname="postgres", user="postgres", password = PGPW, port=5432)
+cur = conn.cursor()
+
+cur.execute(""" CREATE TABLE IF NOT EXISTS person(
+            id INT PRIMARY KEY,
+            name VARCHAR(255),
+            age INT,
+            gender CHAR
+            
+);
+ """)
+
+cur.execute(""" INSERT INTO person (id, name, age, gender) VALUES
+            (1, 'Chance', 26, 'm'),
+            (2, 'Wen', 22, 'f')
+ """)
+
+conn.commit()
+cur.close()
+conn.close()
 
 # TO CHANGE: check intents
 intents = discord.Intents.default()
@@ -49,6 +76,7 @@ events
 - maybe: int
 
 members
+- name: str
 - yes: array of event id
 - no: array of event id 
 - maybe: array of event id 
