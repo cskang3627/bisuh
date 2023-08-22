@@ -1,2 +1,2 @@
 # WORK IN PROGRESS
-config.json should contain prefix, token.
+config.json is part of .gitignore and contains prefix, token

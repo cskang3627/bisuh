@@ -1,4 +1,5 @@
 import discord
+from discord import app_commands
 from discord.ext import commands
 import json
 import psycopg2
@@ -48,6 +49,7 @@ bot = commands.Bot(command_prefix=PRE, intents=intents)
 async def on_ready():
     print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     print('------')
+    synched = await bot.tree.sync()
 
 @bot.event
 async def on_guild_join(guild):
@@ -95,27 +97,22 @@ members
 - maybe: array of event id 
 '''
 
+@bot.tree.command(name="create", description="create new event")
+async def create(interaction: discord.interactions, name:str, date:str, start_time:str, end_time:str, location:str):
+    await interaction.response.send_message(content = "%s: %s, %s - %s, %s has been created!" %(name,date,start_time, end_time, location))
+
+"""
 @bot.command()
-async def new(ctx, name, date, start_time, end_time, location='online'):
-    await ctx.send("%s: %s, %s - %s, %s has been created!" %(name,date,start_time, end_time, location))
-
- 
-'''
-#usecase: !cool bot => bot is cool, !cool name => name is not cool
-@bot.group()
-async def cool(ctx):
-    """Says if a user is cool.
-
-    In reality this just checks if a subcommand is being invoked.
-    """
-    if ctx.invoked_subcommand is None:
-        await ctx.send(f'No, {ctx.subcommand_passed} is not cool')
-
-
-@cool.command(name='bot')
-async def _bot(ctx):
-    """Is the bot cool?"""
-    await ctx.send('Yes, the bot is cool.')
-'''
-
+async def show(ctx, subcom):
+    match subcom:
+        case today:
+        case thisweek:
+        case nextweek:
+        case thismonth:
+        case all:
+        case dup:
+        case _:
+             
+"""
 bot.run(TOK)
+
