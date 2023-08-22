@@ -1,6 +1,7 @@
 import discord
 from discord import app_commands
 from discord.ext import commands
+from dateparser import parse
 import json
 import psycopg2
 
@@ -99,6 +100,9 @@ members
 
 @bot.tree.command(name="create", description="create new event")
 async def create(interaction: discord.interactions, name:str, date:str, start_time:str, end_time:str, location:str):
+    date = parse(date, settings={'STRICT_PARSING': True})
+    start_time = parse(start_time)
+    end_time = parse(end_time)
     await interaction.response.send_message(content = "%s: %s, %s - %s, %s has been created!" %(name,date,start_time, end_time, location))
 
 """
