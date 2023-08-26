@@ -92,13 +92,24 @@ TODO:
 '''
 @bot.tree.command(name="create", description="create new event")
 async def create(interaction: discord.interactions, name:str, date:str, start_time:str, end_time:str, location:str):
-    currTime = datetime.now()
-    date = parse(date, settings={'STRICT_PARSING': True}).strftime('%Y-%m-%d')
-    start_time = parse(start_time).strftime('%H:%M:%S')
-    end_time = parse(end_time).strftime('%H:%M:%S')
-    print(interaction.created_at)
-    await interaction.response.send_message(content = "%s: %s, %s - %s, %s has been created!  %s" %(name,date,start_time, end_time, location, currTime))
-
+    setting = {
+        'RELATIVE_BASE' : interaction.created_at,
+        'PREFER_DATES_FROM' : 'future',
+        'STRICT_PARSING': True 
+        }
+    #TODO: try catch for parse returning none
+    start_parsed = parse(date+" "+start_time)
+    end_parsed = parse(date+" "+end_time)
+    start_unix = int(start_parsed.timestamp())
+    end_unix = int(end_parsed.timestamp())
+    print(start_unix)
+    print(end_unix)
+    '''
+    date = parse(date, settings=setting).strftime('%Y-%m-%d')
+    start_time = parse(start_time, settings=setting).strftime('%H:%M')
+    end_time = parse(end_time, settings=setting).strftime('%H:%M')
+    '''
+    await interaction.response.send_message(content = f"Event {name}: <t:{start_unix}:F> ~ <t:{end_unix}:F> has been created!")
 """
 @bot.command()
 async def show(ctx, subcom):
