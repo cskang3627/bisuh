@@ -2,6 +2,7 @@ import discord
 from discord import app_commands
 from discord.ext import commands
 from dateparser import parse
+from datetime import datetime
 import json
 import psycopg2
 
@@ -59,7 +60,6 @@ async def on_guild_join(guild):
         await guild.create_text_channel('events-by-bisuh')
 
 '''
-TO DO:
 -- user READ
 !show +
  - today
@@ -70,40 +70,34 @@ TO DO:
  - dup
  - rsvp event_name 
 -- user CREAETE UPDATE DELETE
-!new name date stime etime location
 !change name date stime etime location (1 or more)
 !delete name 
-!rsvp name reminder_time
-    - set guide for hour, min
 !describe name
-!vote eventname 
-    - multiple events with same name gets voted depending on rsvp count (by score of yes : 1, maybe : 0.5)
--- SQL Database
-events
-- name: str
-- date: date
-- Stime: time
-- Etime: time
-- location: str
-- requester: member id
-- description: str
-- yes: int
-- no: int
-- maybe: int
-
-members
-- name: str
-- yes: array of event id
-- no: array of event id 
-- maybe: array of event id 
 '''
 
+
+'''
+TODO:
+** USE server time -> find a way to dynamically display time
+1. check if created event is later than current time
+2. check if dup exists (name okay, time not okay)
+3. display as embeded prompt for readiblity
+4. emoji for rsvp
+5. pull data: 
+    user ID
+    server ID
+6. generate eventID (auto incrememt from sql)
+
+
+'''
 @bot.tree.command(name="create", description="create new event")
 async def create(interaction: discord.interactions, name:str, date:str, start_time:str, end_time:str, location:str):
-    date = parse(date, settings={'STRICT_PARSING': True})
-    start_time = parse(start_time)
-    end_time = parse(end_time)
-    await interaction.response.send_message(content = "%s: %s, %s - %s, %s has been created!" %(name,date,start_time, end_time, location))
+    currTime = datetime.now()
+    date = parse(date, settings={'STRICT_PARSING': True}).strftime('%Y-%m-%d')
+    start_time = parse(start_time).strftime('%H:%M:%S')
+    end_time = parse(end_time).strftime('%H:%M:%S')
+    print(interaction.created_at)
+    await interaction.response.send_message(content = "%s: %s, %s - %s, %s has been created!  %s" %(name,date,start_time, end_time, location, currTime))
 
 """
 @bot.command()
