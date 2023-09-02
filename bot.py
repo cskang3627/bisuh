@@ -4,7 +4,7 @@ from discord.ext import commands
 from dateparser import parse
 from datetime import datetime
 import json
-import psycopg2
+import asyncpg
 
 # TODO consider .env instead of json
 # config stores prefix, token
@@ -12,24 +12,24 @@ with open("config.json") as f:
     scrt = json.load(f)
 
 TOK = scrt["token"]
-PRE = scrt["prefix"]
 PGPW = scrt["pgpw"]
 
 #POSTGRESQL
 '''
-conn = psycopg2.connect(host="localhost", dbname="postgres", user="postgres", password = PGPW, port=5432)
-cur = conn.cursor()
 
-cur.execute(""" CREATE TABLE IF NOT EXISTS person(
-            id INT PRIMARY KEY,
-            name VARCHAR(255),
-            age INT,
-            gender CHAR
+
+cur.execute(""" CREATE TABLE IF NOT EXISTS events(
+            event_id SERIAL PRIMARY KEY,
+            event_name VARCHAR(255),
+            date DATE,
+            start_time TIME,
+            end_time TIME, 
+            server_id VARCHAR(255)
             
 );
  """)
 
-cur.execute(""" INSERT INTO person (id, name, age, gender) VALUES
+cur.execute(""" INSERT INTO person (event_id, event_name, date, start_time, end_time, server_id) VALUES
             (1, 'Chance', 26, 'm'),
             (2, 'Wen', 22, 'f')
  """)
@@ -45,13 +45,25 @@ intents.members = True
 intents.message_content = True
 
 #bot
-bot = commands.Bot(command_prefix=PRE, intents=intents)
+bot = commands.Bot(command_prefix='!', intents=intents)
+
+async def pg_pool():
+    bot.pg_conn = await asyncpg.create_pool(host = "localhost", port = 5432, user = "postgres", password = PGPW, database = "postgres")
+    await bot.pg_conn.execute(""" CREATE TABLE IF NOT EXISTS events(
+            event_id SERIAL PRIMARY KEY,
+            event_name VARCHAR(255),
+            date DATE,
+            start_time TIME,
+            end_time TIME, 
+            server_id VARCHAR(255));""")
 
 @bot.event
 async def on_ready():
+    await pg_pool() 
+    print('db connected')
     print(f'Logged in as {bot.user} (ID: {bot.user.id})')
     print('------')
-    synched = await bot.tree.sync()
+    await bot.tree.sync()
 
 @bot.event
 async def on_guild_join(guild):
@@ -78,7 +90,6 @@ async def on_guild_join(guild):
 
 '''
 TODO:
-** USE server time -> find a way to dynamically display time
 1. check if created event is later than current time
 2. check if dup exists (name okay, time not okay)
 3. display as embeded prompt for readiblity
@@ -91,25 +102,21 @@ TODO:
 
 '''
 @bot.tree.command(name="create", description="create new event")
-async def create(interaction: discord.interactions, name:str, date:str, start_time:str, end_time:str, location:str):
-    setting = {
-        'RELATIVE_BASE' : interaction.created_at,
-        'PREFER_DATES_FROM' : 'future',
-        'STRICT_PARSING': True 
-        }
+async def create(interaction: discord.Interaction, name:str, when:str, duration:str = '0 hour', location:str = '' ):
+   
     #TODO: try catch for parse returning none
-    start_parsed = parse(date+" "+start_time)
-    end_parsed = parse(date+" "+end_time)
-    start_unix = int(start_parsed.timestamp())
+    when_parsed = parse(when, settings = {'PREFER_DATES_FROM':'future'})
+    end_parsed = parse(duration, settings =  {'RELATIVE_BASE':when_parsed, 'PREFER_DATES_FROM':'future'})
+    when_unix = int(when_parsed.timestamp())
     end_unix = int(end_parsed.timestamp())
-    print(start_unix)
-    print(end_unix)
+    print(when_parsed)
+    print(end_parsed)
     '''
     date = parse(date, settings=setting).strftime('%Y-%m-%d')
     start_time = parse(start_time, settings=setting).strftime('%H:%M')
     end_time = parse(end_time, settings=setting).strftime('%H:%M')
     '''
-    await interaction.response.send_message(content = f"Event {name}: <t:{start_unix}:F> ~ <t:{end_unix}:F> has been created!")
+    await interaction.response.send_message(content = f"Event {name}: <t:{when_unix}:F> ~ <t:{end_unix}:F> has been created!")
 """
 @bot.command()
 async def show(ctx, subcom):
