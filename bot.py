@@ -52,10 +52,10 @@ async def pg_pool():
     await bot.pg_conn.execute(""" CREATE TABLE IF NOT EXISTS events(
             event_id SERIAL PRIMARY KEY,
             event_name VARCHAR(255),
-            date DATE,
-            start_time TIME,
-            end_time TIME, 
-            server_id VARCHAR(255));""")
+            start_date TIMESTAMP,
+            end_date TIMESTAMP, 
+            guild_id BIGINT,
+            creator_id BIGINT); """)
 
 @bot.event
 async def on_ready():
@@ -116,7 +116,11 @@ async def create(interaction: discord.Interaction, name:str, when:str, duration:
     start_time = parse(start_time, settings=setting).strftime('%H:%M')
     end_time = parse(end_time, settings=setting).strftime('%H:%M')
     '''
+    await bot.pg_conn.execute(""" INSERT INTO events(event_name, start_date, end_date, guild_id, creator_id ) VALUES ($1,$2,$3,$4,$5)""",
+                              name, when_parsed, end_parsed, interaction.guild_id, interaction.user.id)
     await interaction.response.send_message(content = f"Event {name}: <t:{when_unix}:F> ~ <t:{end_unix}:F> has been created!")
+
+
 """
 @bot.command()
 async def show(ctx, subcom):
