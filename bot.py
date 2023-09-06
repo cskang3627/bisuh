@@ -29,8 +29,7 @@ async def pg_pool():
             start_date TIMESTAMP,
             end_date TIMESTAMP, 
             guild_id BIGINT,
-            creator_id BIGINT,
-                              ); """)
+            creator_id BIGINT); """)
 
 @bot.event
 async def on_ready():
@@ -68,7 +67,6 @@ async def on_guild_join(guild):
 async def create(interaction: discord.Interaction, name:str, when:str, 
                  duration:str = '0 hour', timezone:str = 'UTC', location:str = '', description:str = ''):
    
-    #TODO: try catch for parse returning none
     try:
         when_parsed = parse(when, settings = {'PREFER_DATES_FROM':'future', 'TIMEZONE' : timezone})
         end_parsed = parse(duration, settings =  {'RELATIVE_BASE':when_parsed, 'PREFER_DATES_FROM':'future', 'TIMEZONE': timezone})
