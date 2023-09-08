@@ -61,30 +61,39 @@ async def on_guild_join(guild):
 !describe name
 '''
 
+@bot.tree.command(name="create", description="Create new event. Timezone is set to server's if not specified.")
+async def create(interaction: discord.Interaction, name:str, when:str,
+                 duration:str = '0 hour', timezone:str = '', location:str = '', description:str = ''):
 
+    # Get local and specified timezones
+    loc_tz = datetime.now().astimezone().tzinfo.tzname(None)
+    timezone = timezone or loc_tz
 
-@bot.tree.command(name="create", description="Create new event. Timezone is set to UTC if not specified.")
-async def create(interaction: discord.Interaction, name:str, when:str, 
-                 duration:str = '0 hour', timezone:str = 'UTC', location:str = '', description:str = ''):
-   
-    try:
-        when_parsed = parse(when, settings = {'PREFER_DATES_FROM':'future', 'TIMEZONE' : timezone})
-        end_parsed = parse(duration, settings =  {'RELATIVE_BASE':when_parsed, 'PREFER_DATES_FROM':'future', 'TIMEZONE': timezone})
-    except:
-        await interaction.response.send_message(content = "Failed to parse when or duration.")
-        return
-
-    if when_parsed is None or end_parsed is None: 
-        await interaction.response.send_message(content = "Failed to parse when or duration.")
     if len(name) > 255:
-        await interaction.response.send_message(content = "Name of the event is too long.")
+        await interaction.response.send_message(content="Name of the event is too long.")
         return
-    
-    when_unix = int(when_parsed.timestamp())
-    end_unix = int(end_parsed.timestamp())
-    await bot.pg_conn.execute(""" INSERT INTO events(event_name, start_date, end_date, guild_id, creator_id ) VALUES ($1,$2,$3,$4,$5)""",
+
+    event_count = await bot.pg_conn.fetchval("""SELECT COUNT(*) FROM events WHERE event_name = $1 AND guild_id = $2""",
+                                             name, interaction.guild_id)
+    if event_count >= 5:
+        await interaction.response.send_message(content="This event name has been used too many times.")
+        return
+    try:
+        when_parsed = parse(when, settings={'PREFER_DATES_FROM': 'future', 'TIMEZONE': timezone, 'TO_TIMEZONE': loc_tz})
+        end_parsed = parse(duration, settings={'RELATIVE_BASE': when_parsed, 'PREFER_DATES_FROM': 'future'})
+        
+        if when_parsed is None or end_parsed is None:
+            raise ValueError("Failed to parse when or duration")
+    except ValueError:
+        await interaction.response.send_message(content="Failed to parse when or duration.")
+        return
+
+    when_unix, end_unix = int(when_parsed.timestamp()), int(end_parsed.timestamp())
+    await bot.pg_conn.execute("""INSERT INTO events(event_name, start_date, end_date, guild_id, creator_id)
+                                 VALUES ($1, $2, $3, $4, $5)""",
                               name, when_parsed, end_parsed, interaction.guild_id, interaction.user.id)
-    await interaction.response.send_message(content = f"Event {name}: <t:{when_unix}:F> ~ <t:{end_unix}:F> has been created!")
+    
+    await interaction.response.send_message(content=f"Event {name}: <t:{when_unix}:F> ~ <t:{end_unix}:F> has been created!")
 
 # TODO: limit same name up to 5 events, dup delete with 5 number emoji
 @bot.tree.command(name="delete", description="Delete an existing event by its name.")
