@@ -1,12 +1,15 @@
-import discord
-from discord import app_commands
-from discord.ext import commands
-from dateparser import parse
-from datetime import datetime
 import json
-import asyncpg
+import collections
+import calendar
 import asyncio
+from datetime import datetime, timedelta
+
+import discord
+from discord.ext import commands
+import asyncpg
 import pytz
+from dateparser import parse
+
 
 # TODO consider .env instead of json
 with open("config.json") as f:
@@ -14,6 +17,16 @@ with open("config.json") as f:
 
 TOK = scrt["token"]
 PGPW = scrt["pgpw"]
+# timezone data
+tzones = collections.defaultdict(set)
+abbrevs = collections.defaultdict(set)
+
+for name in pytz.all_timezones:
+    tzone = pytz.timezone(name)
+    for utcoffset, dstoffset, tzabbrev in getattr(
+            tzone, '_transition_info', [[None, None, datetime.now(tzone).tzname()]]):
+        tzones[tzabbrev].add(name)
+        abbrevs[name].add(tzabbrev)
 
 # TODO: check intents
 intents = discord.Intents.default()
@@ -27,8 +40,8 @@ async def pg_pool():
     await bot.pg_conn.execute(""" CREATE TABLE IF NOT EXISTS events(
             event_id SERIAL PRIMARY KEY,
             event_name VARCHAR(255),
-            start_date INTEGER,
-            end_date INTEGER,
+            start_date TIMESTAMP,
+            end_date TIMESTAMP,
             event_loc VARCHAR(255),
             event_note VARCHAR(255), 
             guild_id BIGINT,
@@ -68,21 +81,23 @@ async def create(interaction: discord.Interaction, name:str, when:str,
             await interaction.response.send_message(embeds=[embed])
             return
     # input timezone check
-    if timezone and timezone not in pytz.all_timezones:
-        embed = discord.Embed(
-            title = 'Error: Invalid Timezone',
-            description='The timezone you have entered is invalid.',
-            color=discord.Color.red()
-        )
-        await interaction.response.send_message(embeds=[embed])
-        return
+    if timezone:
+        if timezone not in pytz.all_timezones and timezone not in tzones:
+            embed = discord.Embed(
+                title='Error: Invalid Timezone',
+                description='The timezone or abbreviation you have entered is invalid.'
+                '\nFor a list of valid timezones, [click here](https://gist.github.com/heyalexej/8bf688fd67d7199be4a1682b3eec7568).',
+                color=discord.Color.red()
+            )
+            await interaction.response.send_message(embeds=[embed])
+            return
     # same name event is limited to 5 creations
     event_count = await bot.pg_conn.fetchval("""SELECT COUNT(*) FROM events WHERE event_name = $1 AND guild_id = $2""",
                                              name, interaction.guild_id)
     if event_count >= 5:
         embed = discord.Embed(
             title='Error: Event Name Used Too Often',
-            description="This event name has been used too many times.",
+            description="You've already created 5 events with the same name.\nPlease choose a different name.",
             color=discord.Color.red()
         )
         await interaction.response.send_message(embeds=[embed])
@@ -111,11 +126,11 @@ async def create(interaction: discord.Interaction, name:str, when:str,
     when_unix, end_unix = int(when_parsed.timestamp()), int(end_parsed.timestamp())
     await bot.pg_conn.execute("""INSERT INTO events(event_name, start_date, end_date, event_loc, event_note, guild_id, creator_id)
                                  VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                              name, when_unix, end_unix, location, note, interaction.guild_id, interaction.user.id)
+                              name, when_parsed, end_parsed, location, note, interaction.guild_id, interaction.user.id)
 
     embed = discord.Embed(
-        title='Event Created',
-        description=f"Event {name}: <t:{when_unix}:F> ~ <t:{end_unix}:F> has been created!",
+        title= f"Event {name} Created",
+        description=f"<t:{when_unix}:f> ~ <t:{end_unix}:f>\n{location}\n{note}",
         color=discord.Color.green()
     )
     await interaction.response.send_message("creating event...", ephemeral=True)
@@ -127,26 +142,45 @@ async def create(interaction: discord.Interaction, name:str, when:str,
 @bot.tree.command(name="delete", description="Delete an existing event by its name.")
 async def delete(interaction: discord.Interaction, name: str):
     # db lookup
-    records = await bot.pg_conn.fetch("SELECT event_id, start_date, end_date, creator_id FROM events WHERE event_name = $1 AND guild_id = $2",
+    records = await bot.pg_conn.fetch("SELECT event_id, start_date, end_date, event_loc, creator_id FROM events WHERE event_name = $1 AND guild_id = $2",
                                       name, interaction.guild_id)
     # no data
     if len(records) == 0:
-        await interaction.response.send_message(content="No events found.")
+        embed = discord.Embed(
+            title = 'Error: No events found.',
+            description = f"No events with the name {name}.\nPlease check and try again.",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embeds=[embed])
         return
     # invalid user
     if not (interaction.user.id == records[0]['creator_id'] or interaction.user.guild_permissions.administrator):
-        await interaction.response.send_message(content="Only the creator and administrator can delete.")
+        embed = discord.Embed(
+            title = 'Error: Wrong requester',
+            description = f"Only the creator (<@{records[0]['creator_id']}>) and administrator (mod) can delete.",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embeds=[embed])
         return
-    # sole data
+    # sole data 
     if len(records) == 1:
         await bot.pg_conn.execute("DELETE FROM events WHERE event_id = $1", records[0]['event_id'])
-        await interaction.response.send_message(content=f"Event {name} has been deleted.")
+        embed = discord.Embed(
+        title=f'Event {name} Deleted',
+        description=f"<t:{int(records[0]['start_date'].timestamp())}:f> ~ <t:{int(records[0]['end_date'].timestamp())}:f>"
+                    f"\n{records[0]['event_loc']}\n has been deleted!",
+        color=discord.Color.green()
+        )
+        await interaction.response.send_message(embeds=[embed])
         return
     
     # multi-name handle
-    embed = discord.Embed(title=f"Multiple events found with the name {name}", description="Please choose one to delete:")
+    embed = discord.Embed(
+        title=f"Multiple events found with the name {name}", 
+        description="Please choose one to delete:")
+    
     for i, record in enumerate(records):
-        embed.add_field(name=f"{i+1}", value=f"Event on <t:{record['start_date']}:F> ~ <t:{record['end_date']}:F>", inline=False)
+        embed.add_field(name=f"{i+1}", value=f"<t:{int(record['start_date'].timestamp())}:f> ~ <t:{int(record['end_date'].timestamp())}:f>\n{record['event_loc']}", inline=False)
         
     await interaction.response.send_message("generating delete options...", ephemeral=True)
     message = await interaction.followup.send(embeds=[embed])
@@ -155,7 +189,13 @@ async def delete(interaction: discord.Interaction, name: str):
         await message.add_reaction(emojis[i])
     # check to pass in for wait
     def check(reaction, user):
-        return user == interaction.user and str(reaction.emoji) in emojis
+        # Check if the reaction emoji is correct
+        is_correct_emoji = str(reaction.emoji) in emojis
+
+        # Check if the user is the creator or an admin
+        is_creator_or_admin = user.id == records[0]['creator_id'] or user.guild_permissions.administrator
+
+        return is_correct_emoji and is_creator_or_admin
 
     try:
         reaction, user = await bot.wait_for('reaction_add', timeout=60.0, check=check)
@@ -165,24 +205,79 @@ async def delete(interaction: discord.Interaction, name: str):
     index_to_delete = emojis.index(str(reaction.emoji))
     await bot.pg_conn.execute("DELETE FROM events WHERE event_id = $1", records[index_to_delete]['event_id'])
     embed = discord.Embed(
-        title='Event Deleted',
-        description=f"Event {name}: <t:{records[index_to_delete]['start_date']}:F> ~ <t:{records[index_to_delete]['end_date']}:F> has been deleted!",
+        title=f'Event {name} Deleted',
+        description=f"<t:{int(records[index_to_delete]['start_date'].timestamp())}:f> ~ <t:{int(records[index_to_delete]['end_date'].timestamp())}:f>"
+                    f"\n{records[index_to_delete]['event_loc']}\nhas been deleted!",
         color=discord.Color.green()
     )
     await interaction.followup.send(embeds=[embed])
 
-"""
-@bot.command()
-async def show(ctx, subcom):
-    match subcom:
-        case today:
-        case thisweek:
-        case nextweek:
-        case thismonth:
-        case all:
-        case dup:
-        case _:
-             
-"""
+def get_date_range(option: str):
+    today = datetime.now()
+    if option == "this week":
+        start = datetime.combine(today.date() - timedelta(days=today.weekday()), datetime.min.time())
+        end = datetime.combine(start.date() + timedelta(days=6), datetime.max.time().replace(second=59))
+    elif option == "next week":
+        start = datetime.combine(today.date() + timedelta(days=(7-today.weekday())), datetime.min.time())
+        end = datetime.combine(start.date() + timedelta(days=6), datetime.max.time().replace(second=59))
+    elif option == "this month":
+        start = datetime.combine(today.replace(day=1).date(), datetime.min.time())
+        end = datetime.combine(today.replace(day=calendar.monthrange(today.year, today.month)[1]).date(), datetime.max.time())
+    elif option == "next month":
+        if today.month == 12:
+            start = datetime.combine(today.replace(year=today.year+1, month=1, day=1).date(), datetime.min.time())
+        else:
+            start = datetime.combine(today.replace(month=today.month+1, day=1).date(), datetime.min.time())
+        end = datetime.combine(start.date().replace(day=calendar.monthrange(start.year, start.month)[1]), datetime.max.time())
+    elif option == "all":
+        start = None
+        end = None
+    else:
+        raise ValueError("Invalid option")
+
+    return start, end
+
+
+@bot.tree.command(name="show", description="Show events based on time range.")
+async def show(interaction: discord.Interaction, option: str):
+    if option not in ["this week", "next week", "this month", "next month", "all"]:
+        embed = discord.Embed(
+            title='Error: Invalid Option',
+            description="Please choose one of the options: 'this week', 'next week', 'this month', 'next month', 'all'.",
+            color=discord.Color.red()
+        )
+        await interaction.response.send_message(embeds=[embed])
+        return
+    
+    start_date, end_date = get_date_range(option)
+    
+    if option == "all":
+        events = await bot.pg_conn.fetch("""SELECT event_name, start_date, end_date, event_loc, event_note 
+                                         FROM events WHERE guild_id = $1 ORDER BY start_date ASC""", interaction.guild_id)
+    else:
+        events = await bot.pg_conn.fetch("""SELECT event_name, start_date, end_date, event_loc, event_note 
+                                         FROM events WHERE guild_id = $1 AND start_date BETWEEN $2 AND $3 ORDER BY start_date ASC""", interaction.guild_id, start_date, end_date)
+    
+    if not events:
+        embed = discord.Embed(
+            title='No Events Found',
+            description=f"There are no events scheduled for {option}.",
+            color=discord.Color.blue()
+        )
+        await interaction.response.send_message(embeds=[embed])
+        return
+
+    embed = discord.Embed(
+        title=f"Events for {option.capitalize()}",
+        color=discord.Color.green()
+    )
+    
+    for event in events:
+        embed.add_field(name=event["event_name"], value=f"{event['start_date'].strftime('%Y-%m-%d %H:%M')} to {event['end_date'].strftime('%Y-%m-%d %H:%M')}\nLocation: {event['event_loc']}\nNote: {event['event_note']}", inline=False)
+    
+    await interaction.response.send_message(embeds=[embed])
+
+
+
 bot.run(TOK)
 
