@@ -14,9 +14,9 @@ from dateparser import parse
 # TODO consider .env instead of json
 with open("config.json") as f:
     scrt = json.load(f)
-
 TOK = scrt["token"]
 PGPW = scrt["pgpw"]
+
 # timezone data
 tzones = collections.defaultdict(set)
 abbrevs = collections.defaultdict(set)
@@ -35,17 +35,48 @@ intents.message_content = True
 
 bot = commands.Bot(command_prefix='!', intents=intents)
 
+#db
 async def pg_pool():
     bot.pg_conn = await asyncpg.create_pool(host = "localhost", port = 5432, user = "postgres", password = PGPW, database = "postgres")
-    await bot.pg_conn.execute(""" CREATE TABLE IF NOT EXISTS events(
-            event_id SERIAL PRIMARY KEY,
-            event_name VARCHAR(255),
-            start_date TIMESTAMP,
-            end_date TIMESTAMP,
-            event_loc VARCHAR(255),
-            event_note VARCHAR(255), 
-            guild_id BIGINT,
-            creator_id BIGINT); """)
+    async with bot.pg_conn.acquire() as connection:
+        async with connection.transaction():
+            # events
+            await bot.pg_conn.execute(""" 
+                CREATE TABLE IF NOT EXISTS events(
+                event_id SERIAL PRIMARY KEY,
+                event_name VARCHAR(255),
+                start_date TIMESTAMP,
+                end_date TIMESTAMP,
+                event_loc VARCHAR(255),
+                event_note VARCHAR(255), 
+                guild_id BIGINT,
+                creator_id BIGINT,
+                message_id BIGINT);""")
+            # rsvp
+            await bot.pg_conn.execute("""
+                CREATE TABLE IF NOT EXISTS rsvp(
+                rsvp_id SERIAL PRIMARY KEY,
+                event_id INT REFERENCES events(event_id),
+                user_id BIGINT,
+                attend_confirm BOOLEAN,
+                custom_notification INTERVAL,
+                UNIQUE(event_id, user_id));""")
+            # guild setting
+            await bot.pg_conn.execute("""
+                CREATE TABLE IF NOT EXISTS guild_settings(
+                guild_id BIGINT PRIMARY KEY,
+                timezone VARCHAR(50));""")
+            # user setting
+            await bot.pg_conn.execute("""
+                CREATE TABLE IF NOT EXISTS user_settings(
+                user_id BIGINT PRIMARY KEY,
+                notification INTERVAL);""")
+            #notificaiton 
+            await bot.pg_conn.execute("""
+                CREATE TABLE IF NOT EXISTS notifications(
+                notification_id SERIAL PRIMARY KEY,
+                event_id INT REFERENCES events(event_id),
+                user_id BIGINT REFERENCES user_settings(user_id));""")
     
 # TODO: change db pool creation 
 @bot.event
@@ -62,6 +93,88 @@ async def on_guild_join(guild):
     if 'events-by-bisuh' not in channels:
         await guild.create_text_channel('events-by-bisuh')
 
+@bot.event
+async def on_reaction_add(reaction, user):
+    if user == bot.user:
+        return
+
+    message = reaction.message
+    channel = message.channel
+    guild = message.guild
+
+    if not guild:
+        return  
+
+    if reaction.emoji not in ['✅', '❓', '⏰']:
+        return  
+
+    # Check if this message corresponds to an event (You might need more robust checks here)
+    event_record = await bot.pg_conn.fetchrow("SELECT event_id FROM events WHERE guild_id = $1 AND message_id = $2", guild.id, message.id)
+
+    if not event_record:
+        return  # This message is not an event
+    
+    event_id = event_record['event_id']
+
+    # Handle RSVP
+    if reaction.emoji in ['✅', '❓']:
+        is_confirmed = True if reaction.emoji == '✅' else False
+        await bot.pg_conn.execute("""
+            INSERT INTO rsvp(event_id, user_id, attend_confirm) VALUES ($1, $2, $3)
+            ON CONFLICT (event_id, user_id) DO UPDATE SET attend_confirm = $3""",
+            event_id, user.id, is_confirmed)
+
+    # Handle notifications
+    elif reaction.emoji == '⏰':
+        one_hour = timedelta(hours=1)  
+        await bot.pg_conn.execute("""
+            INSERT INTO user_settings(user_id, notification)
+            VALUES ($1, $2)
+            ON CONFLICT (user_id) DO NOTHING""",
+            user.id, one_hour)
+        
+        await bot.pg_conn.execute("""
+            INSERT INTO notifications(event_id, user_id) VALUES ($1, $2)
+            """,
+            event_id, user.id)
+
+@bot.event
+async def on_reaction_remove(reaction, user):
+    if user == bot.user:
+        return
+
+    message = reaction.message
+    channel = message.channel
+    guild = message.guild
+
+    if not guild:
+        return  # Ignore DMs
+
+    if reaction.emoji not in ['✅', '❓', '⏰']:
+        return  # Ignore other emojis
+
+    event_record = await bot.pg_conn.fetchrow("""
+                                              SELECT event_id FROM events WHERE guild_id = $1 AND message_id = $2"""
+                                              , guild.id, message.id)
+    
+    if not event_record:
+        return  # This message is not an event
+
+    event_id = event_record['event_id']
+
+    # Handle RSVP removal
+    if reaction.emoji in ['✅', '❓']:
+        await bot.pg_conn.execute("""
+                                  DELETE FROM rsvp WHERE event_id = $1 AND user_id = $2"""
+                                  , event_id, user.id)
+
+    # Handle notification removal
+    elif reaction.emoji == '⏰':
+        await bot.pg_conn.execute("""
+                                  DELETE FROM notifications WHERE event_id = $1 AND user_id = $2"""
+                                  , event_id, user.id)
+
+# TODO: check if dup event has the same start and end info
 @bot.tree.command(name="create", description="Create new event. Timezone is set to server's if not specified.")
 async def create(interaction: discord.Interaction, name:str, when:str,
                  duration:str = '0 hour', timezone:str = '', location:str = '', note:str = ''):
@@ -124,9 +237,10 @@ async def create(interaction: discord.Interaction, name:str, when:str,
         return
     # db insert
     when_unix, end_unix = int(when_parsed.timestamp()), int(end_parsed.timestamp())
-    await bot.pg_conn.execute("""INSERT INTO events(event_name, start_date, end_date, event_loc, event_note, guild_id, creator_id)
-                                 VALUES ($1, $2, $3, $4, $5, $6, $7)""",
-                              name, when_parsed, end_parsed, location, note, interaction.guild_id, interaction.user.id)
+    event_id = await bot.pg_conn.fetchval("""INSERT INTO events(event_name, start_date, end_date, event_loc, event_note, guild_id, creator_id)
+                                        VALUES ($1, $2, $3, $4, $5, $6, $7) RETURNING event_id;""",
+                                        name, when_parsed, end_parsed, location, note, interaction.guild_id, interaction.user.id)
+
 
     embed = discord.Embed(
         title= f"Event {name} Created",
@@ -135,9 +249,12 @@ async def create(interaction: discord.Interaction, name:str, when:str,
     )
     await interaction.response.send_message("creating event...", ephemeral=True)
 
+    emojis = ['✅','❓','⏰']
     msg = await interaction.followup.send(embeds=[embed])
-    await msg.add_reaction('👍')
-    await msg.add_reaction('👎')
+    for emoji in emojis:
+        await msg.add_reaction(emoji)
+    await bot.pg_conn.execute("UPDATE events SET message_id = $1 WHERE event_id = $2", msg.id, event_id)
+
 
 @bot.tree.command(name="delete", description="Delete an existing event by its name.")
 async def delete(interaction: discord.Interaction, name: str):
@@ -187,6 +304,7 @@ async def delete(interaction: discord.Interaction, name: str):
     emojis = ["1️⃣", "2️⃣", "3️⃣", "4️⃣", "5️⃣"] 
     for i in range(len(records)):
         await message.add_reaction(emojis[i])
+    
     # check to pass in for wait
     def check(reaction, user):
         # Check if the reaction emoji is correct
@@ -268,12 +386,13 @@ async def show(interaction: discord.Interaction, option: str):
         return
 
     embed = discord.Embed(
-        title=f"Events for {option.capitalize()}",
+        title=f"Events for {option}",
         color=discord.Color.green()
     )
-    
     for event in events:
-        embed.add_field(name=event["event_name"], value=f"{event['start_date'].strftime('%Y-%m-%d %H:%M')} to {event['end_date'].strftime('%Y-%m-%d %H:%M')}\nLocation: {event['event_loc']}\nNote: {event['event_note']}", inline=False)
+        embed.add_field(name=event["event_name"], 
+                        value=f"<t:{int(event['start_date'].timestamp())}:f> to <t:{int(event['end_date'].timestamp())}:f>"
+                        f"\nLocation: {event['event_loc']}\nNote: {event['event_note']}", inline=False)
     
     await interaction.response.send_message(embeds=[embed])
 
