@@ -11,6 +11,8 @@ import pytz
 from dateparser import parse
 
 
+
+
 # TODO consider .env instead of json
 with open("config.json") as f:
     scrt = json.load(f)
@@ -308,7 +310,7 @@ async def create(interaction: discord.Interaction, name:str, when:str,
         await msg.add_reaction(emoji)
     await bot.pg_conn.execute("UPDATE events SET message_id = $1 WHERE event_id = $2", msg.id, event_id)
 
-# TODO: check: event name, user permission, multiple events; show what is changed and edit msg.id as well.  
+# TODO: multievent case fails to send embed when dateparse fails since it already sent emoji embed, alert rsvper of the editted event
 @bot.tree.command(name="edit", description="Edit an event by its name. Please specify appropriate timezone.")
 async def edit(interaction: discord.Interaction, name:str, newname:str='', when:str='',
                  duration:str = '', timezone:str = '', location:str = '', note:str = ''):
@@ -344,6 +346,7 @@ async def edit(interaction: discord.Interaction, name:str, newname:str='', when:
         embed = discord.Embed(
             title=f"Multiple events found with the name {name}", 
             description="Please choose one to delete:")
+        
         for i, record in enumerate(records):
             embed.add_field(name=f"{i+1}", value=f"<t:{int(record['start_date'].timestamp())}:f> ~ <t:{int(record['end_date'].timestamp())}:f>\n{record['event_loc']}", inline=False)
             
@@ -354,18 +357,11 @@ async def edit(interaction: discord.Interaction, name:str, newname:str='', when:
             await message.add_reaction(emojis[i])
         
         # check to pass in for wait
-        def check(reaction, user):
-            # Check if the reaction emoji is correct
-            is_correct_emoji = str(reaction.emoji) in emojis
-
-            # Check if the user is the creator or an admin
-            # TODO: handle multi event with different creators
-            is_creator_or_admin = user.id == records[0]['creator_id'] or user.guild_permissions.administrator
-
-            return is_correct_emoji and is_creator_or_admin
+        def check(reaction, _):
+            return str(reaction.emoji) in emojis
 
         try:
-            reaction, user = await bot.wait_for('reaction_add', timeout=60.0, check=check)
+            reaction, _ = await bot.wait_for('reaction_add', timeout=60.0, check=check)
         except asyncio.TimeoutError:
             await interaction.followup.send(content='Time ran out. No events were editted.')
             return
@@ -387,7 +383,10 @@ async def edit(interaction: discord.Interaction, name:str, newname:str='', when:
     update_fields = {}
     existing_start = to_edit['start_date']
     existing_end = to_edit['end_date']
-    existing_duration = to_string_timedelta(existing_end - existing_start)
+    existing_duration = to_string_timedelta(existing_end - existing_start) or '0 hour'
+
+    when_parsed = None
+    end_parsed = None
 
     if when or duration or timezone:
         when_parsed, end_parsed = await parse_datetime(interaction, when or existing_start, duration or existing_duration, timezone)
@@ -403,19 +402,25 @@ async def edit(interaction: discord.Interaction, name:str, newname:str='', when:
         update_fields['event_note'] = note
     
 
-    update_query = "UPDATE events SET " + ", ".join(f"{key} = ${i+3}" for i, key in enumerate(update_fields.keys())) + " WHERE event_name = $1 AND guild_id = $2"
-    print("SQL Query:", update_query)
-    print("Values:", *update_fields.values())
-    print(update_fields)
+    update_query = "UPDATE events SET " + ", ".join(f"{key} = ${i+2}" for i, key in enumerate(update_fields.keys())) + " WHERE event_id = $1"
 
-    await bot.pg_conn.execute(update_query, name, interaction.guild_id, *update_fields.values())
+    await bot.pg_conn.execute(update_query, to_edit["event_id"], *update_fields.values())
 
+    when_unix = int((when_parsed or existing_start).timestamp())
+    end_unix = int((end_parsed or existing_end).timestamp())
     embed = discord.Embed(
-        title='Event Edited Successfully',
-        description=f"Event {name} has been edited successfully.",
+        title= f"Event {newname or name} Editted",
+        description=f"<t:{when_unix}:f> ~ <t:{end_unix}:f>\n{location}\n{note}",
         color=discord.Color.green()
     )
-    await interaction.response.send_message(embeds=[embed])
+    if len(records) == 1:
+        await interaction.response.send_message("editting event...", ephemeral=True)
+
+    emojis = ['✅','❓','⏰']
+    msg = await interaction.followup.send(embeds=[embed])
+    for emoji in emojis:
+        await msg.add_reaction(emoji)
+    await bot.pg_conn.execute("UPDATE events SET message_id = $1 WHERE event_id = $2", msg.id, to_edit['event_id'])
 
 # TODO: notify event is deleted to those who rsvped
 @bot.tree.command(name="delete", description="Delete an existing event by its name.")
@@ -447,11 +452,11 @@ async def delete(interaction: discord.Interaction, name: str):
         for i in range(len(records)):
             await message.add_reaction(emojis[i])
         
-        def check(reaction, user):
+        def check(reaction, _):
             return str(reaction.emoji) in emojis
 
         try:
-            reaction, user = await bot.wait_for('reaction_add', timeout=60.0, check=check)
+            reaction, _ = await bot.wait_for('reaction_add', timeout=60.0, check=check)
         except asyncio.TimeoutError:
             await interaction.followup.send(content='Time ran out. No events were deleted.')
             return
@@ -479,7 +484,10 @@ async def delete(interaction: discord.Interaction, name: str):
                     f"\n{to_delete['event_loc']}\n has been deleted!",
         color=discord.Color.green()
     )
-    await interaction.response.send_message(embeds=[embed])
+    if len(records) == 1:
+        await interaction.response.send_message(embeds=[embed])
+    else:
+        await interaction.followup.send(embeds=[embed])
 
 # TODO: add option for looking up with name
 @bot.tree.command(name="show", description="Show events based on time range.")
