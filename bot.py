@@ -1,4 +1,5 @@
-import json
+import os
+from dotenv import load_dotenv
 import collections
 import calendar
 import asyncio
@@ -11,14 +12,37 @@ import pytz
 from dateparser import parse
 
 
+"""
+TODO 
+2. delete on_guild_join
+3. rsvp
+- test emojis again
+- notification
+4. test edit again (all fields)
+5. edit + delete 
+- helper function
+- notify rsvpers that event has been changed
+6. injection check for create
+7. edit
+- auto rsvp on new embed for editted detail (possible?)
+8. show
+- show by event name
+- private option for dming info
+9. select func (new)
+- delete all but chosen event for same name
+- option to choose by rsvp, vote?
+10. consider actions when members leave
 
-
-# TODO consider .env instead of json
-with open("config.json") as f:
-    scrt = json.load(f)
-TOK = scrt["token"]
-PGPW = scrt["pgpw"]
-
+IDEA
+1. calendar per private channel as well
+- create called -> also save channel id
+- if event from private -> show only in that channel
+"""
+load_dotenv()
+TOK = os.environ.get("TOK")
+PGPW = os.environ.get("PGPW")
+print(TOK)
+print(PGPW)
 # timezone data
 tzones = collections.defaultdict(set)
 abbrevs = collections.defaultdict(set)
@@ -168,7 +192,6 @@ async def pg_pool():
                 user_id BIGINT REFERENCES user_settings(user_id));""")
 
 # bot event    
-# TODO: change db pool creation 
 @bot.event
 async def on_ready():
     await pg_pool() 
@@ -264,8 +287,7 @@ async def on_reaction_remove(reaction, user):
                                   DELETE FROM notifications WHERE event_id = $1 AND user_id = $2"""
                                   , event_id, user.id)
 
-# bot command
-# TODO: check if dup event has the same start and end info
+
 @bot.tree.command(name="create", description="Create new event. Timezone is set to server's if not specified.")
 async def create(interaction: discord.Interaction, name:str, when:str,
                  duration:str = '0 hour', timezone:str = '', location:str = '', note:str = ''):
@@ -310,7 +332,7 @@ async def create(interaction: discord.Interaction, name:str, when:str,
         await msg.add_reaction(emoji)
     await bot.pg_conn.execute("UPDATE events SET message_id = $1 WHERE event_id = $2", msg.id, event_id)
 
-# TODO: multievent case fails to send embed when dateparse fails since it already sent emoji embed, alert rsvper of the editted event
+# TODO: alert rsvper of the editted event
 @bot.tree.command(name="edit", description="Edit an event by its name. Please specify appropriate timezone.")
 async def edit(interaction: discord.Interaction, name:str, newname:str='', when:str='',
                  duration:str = '', timezone:str = '', location:str = '', note:str = ''):
@@ -531,4 +553,3 @@ async def show(interaction: discord.Interaction, option: str):
     await interaction.response.send_message(embeds=[embed])
 
 bot.run(TOK)
-
